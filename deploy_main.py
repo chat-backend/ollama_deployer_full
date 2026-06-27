@@ -4,12 +4,14 @@
 """
 Ollama PRO+ Cluster Deployer (Python V15 core)
 Tinh gọn – đồng bộ chuẩn Ollama Cloud Gateway.
+Hoàn chỉnh, kiểm tra lỗi, đồng bộ logic.
 """
 
 import argparse
 import os
 import subprocess
 from secrets import token_hex
+from typing import List
 
 from ollama_deployer.settings import (
     DOMAINS,
@@ -56,7 +58,7 @@ def log(msg: str) -> None:
     print(msg)
 
 
-def run(cmd: list[str], check: bool = True):
+def run(cmd: List[str], check: bool = True) -> subprocess.CompletedProcess:
     log(f"[RUN] {' '.join(cmd)}")
     return subprocess.run(cmd, check=check)
 
@@ -64,34 +66,40 @@ def run(cmd: list[str], check: bool = True):
 # ============================================================
 #  PROJECT CONFIG (CHUẨN OLLAMA) – LUÔN TẠO MỚI
 # ============================================================
+def backup_project_config() -> None:
+    if not PROJECT_CONFIG_FILE.exists():
+        return
+    backup_path = PROJECT_CONFIG_FILE.with_suffix(".bak")
+    log(f"[INFO] Backing up old project config to {backup_path}")
+    try:
+        backup_path.write_text(PROJECT_CONFIG_FILE.read_text())
+    except Exception as e:
+        log(f"[WARN] Could not backup old config: {e}")
+
+
 def init_project_config() -> ProjectConfig:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 
+    if not DOMAINS:
+        raise SystemExit("[ERROR] No domains configured in DOMAINS.")
+
+    if len(set(DOMAINS)) != len(DOMAINS):
+        raise SystemExit("[ERROR] Duplicate domains detected in DOMAINS.")
+
     base_url = f"https://{DOMAINS[0]}"
 
-    # API chuẩn v12
     api_generate = f"{base_url}/api/v12/chat/stream"
     api_completion = f"{base_url}/api/v12/chat"
     api_pull = f"{base_url}/api/v12/pull"
     api_health = f"{base_url}/api/v12/health"
 
-    # Always regenerate config — backup old file safely
-    if PROJECT_CONFIG_FILE.exists():
-        backup_path = PROJECT_CONFIG_FILE.with_suffix(".bak")
-        log(f"[INFO] Backing up old project config to {backup_path}")
-        try:
-            old_data = PROJECT_CONFIG_FILE.read_text()
-            backup_path.write_text(old_data)
-        except Exception as e:
-            log(f"[WARN] Could not backup old config: {e}")
+    backup_project_config()
 
     log("[INFO] Creating fresh project config (v1.0)...")
 
-    # Generate new secrets every deploy
     api_key = token_hex(64)
     token_secret = token_hex(64)
 
-    # Write new project config
     PROJECT_CONFIG_FILE.write_text(
         "CONFIG_VERSION=1.0\n"
         f"BASE_URL={base_url}\n"
@@ -103,14 +111,12 @@ def init_project_config() -> ProjectConfig:
         f"TOKEN_SECRET={token_secret}\n"
     )
 
-    # Load config into dict
     data: dict[str, str] = {}
     for line in PROJECT_CONFIG_FILE.read_text().splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             data[k.strip()] = v.strip()
 
-    # Ensure API key file is always overwritten cleanly
     try:
         API_KEY_FILE.unlink(missing_ok=True)
     except Exception:
@@ -157,37 +163,35 @@ def update_system() -> None:
 
 
 # ============================================================
-#  FULL DEPLOY
+#  DEPLOY STEPS
 # ============================================================
-def full_deploy() -> None:
-    require_root()
-    log(f"[INFO] Starting PRO+ Ollama deployment for: {', '.join(DOMAINS)}")
-
-    cfg = init_project_config()
-    be.load_backends()
-
-    check_dns()
-    update_system()
-
-    # Install services
+def deploy_services() -> None:
     install_ollama()
     configure_ollama_service()
     install_certbot()
     install_nginx()
 
+
+def configure_nginx_and_ssl() -> None:
     ngx.generate_upstream_block()
 
     for domain in DOMAINS:
-        issue_ssl_for_domain(domain)
+        result = issue_ssl_for_domain(domain)
+        # Cho phép issue_ssl_for_domain trả về None hoặc bool
+        if result is False:
+            raise SystemExit(f"[ERROR] Failed to issue SSL for {domain}")
         ngx.configure_nginx_site_for_domain(domain)
 
     ngx.reload_nginx()
 
+
+def finalize_security() -> None:
     setup_monitoring()
     setup_backup()
     setup_firewall()
 
-    log("[OK] Core deploy completed.")
+
+def print_api_info(cfg: ProjectConfig) -> None:
     log("=== API ENDPOINTS ===")
     log(f"  BASE_URL       : {cfg.base_url}")
     log(f"  HEALTH_URL     : {cfg.api_health}")
@@ -212,6 +216,38 @@ def full_deploy() -> None:
         f"-H \"Content-Type: application/json\" "
         f"-d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\",\"stream\":false}}'"
     )
+
+
+# ============================================================
+#  FULL DEPLOY
+# ============================================================
+def full_deploy() -> None:
+    require_root()
+    log(f"[INFO] Starting PRO+ Ollama deployment for: {', '.join(DOMAINS)}")
+
+    cfg = init_project_config()
+    be.load_backends()
+
+    if not getattr(be, "backends", None):
+        log("[WARN] No backends registered. API will not function until you add one.")
+
+    check_dns()
+    update_system()
+
+    deploy_services()
+    configure_nginx_and_ssl()
+    finalize_security()
+
+    # Health-check sau deploy
+    try:
+        require_root()
+        health_check()
+        log("[OK] Cluster health-check passed.")
+    except SystemExit as e:
+        log(f"[WARN] Health-check failed: {e}")
+
+    log("[OK] Core deploy completed.")
+    print_api_info(cfg)
 
 
 # ============================================================
@@ -243,6 +279,24 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def handle_backend_command(cmd: str, backend: str) -> None:
+    actions = {
+        "add-backend": be.add_backend,
+        "remove-backend": be.remove_backend,
+        "drain-backend": be.drain_backend,
+        "undrain-backend": be.undrain_backend,
+    }
+
+    if cmd not in actions:
+        raise SystemExit(f"[ERROR] Unknown backend command: {cmd}")
+
+    actions[cmd](backend)
+
+    if cmd in ("add-backend", "remove-backend"):
+        ngx.generate_upstream_block()
+        ngx.reload_nginx()
+
+
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
@@ -268,25 +322,9 @@ def main() -> None:
         require_root()
         rolling_restart()
 
-    elif cmd == "add-backend":
+    elif cmd in ("add-backend", "remove-backend", "drain-backend", "undrain-backend"):
         require_root()
-        be.add_backend(args.backend)
-        ngx.generate_upstream_block()
-        ngx.reload_nginx()
-
-    elif cmd == "remove-backend":
-        require_root()
-        be.remove_backend(args.backend)
-        ngx.generate_upstream_block()
-        ngx.reload_nginx()
-
-    elif cmd == "drain-backend":
-        require_root()
-        be.drain_backend(args.backend)
-
-    elif cmd == "undrain-backend":
-        require_root()
-        be.undrain_backend(args.backend)
+        handle_backend_command(cmd, args.backend)
 
     else:
         parser.print_help()
@@ -294,3 +332,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
