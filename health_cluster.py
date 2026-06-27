@@ -54,18 +54,19 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def curl_health(backend: str, timeout: int = 3) -> bool:
-    """Check health của backend qua /health (native Ollama)."""
+    """
+    Health-check cho Ollama 0.30.x: dùng CLI thay vì HTTP.
+    Backend không còn /health hay /api/health.
+    """
     try:
-        subprocess.run(
-            [
-                "curl", "-fsS",
-                "--max-time", str(timeout),
-                f"http://{backend}/health",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+        result = subprocess.run(
+            ["ollama", "ps"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
             check=True,
         )
+        # Nếu ollama ps chạy được → backend healthy
         return True
     except Exception:
         return False
