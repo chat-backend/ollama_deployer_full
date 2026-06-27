@@ -69,9 +69,11 @@ def init_project_config() -> ProjectConfig:
 
     base_url = f"https://{DOMAINS[0]}"
 
-    api_generate = f"{base_url}/ollama/api/generate"
-    api_pull = f"{base_url}/ollama/api/pull"
-    api_health = f"{base_url}/ollama/api/health"
+    # API chuẩn v12
+    api_generate = f"{base_url}/api/v12/chat/stream"
+    api_completion = f"{base_url}/api/v12/chat"
+    api_pull = f"{base_url}/api/v12/pull"
+    api_health = f"{base_url}/api/v12/health"
 
     # Always regenerate config — backup old file safely
     if PROJECT_CONFIG_FILE.exists():
@@ -94,6 +96,7 @@ def init_project_config() -> ProjectConfig:
         "CONFIG_VERSION=1.0\n"
         f"BASE_URL={base_url}\n"
         f"API_GENERATE={api_generate}\n"
+        f"API_COMPLETION={api_completion}\n"
         f"API_PULL={api_pull}\n"
         f"API_HEALTH={api_health}\n"
         f"API_KEY={api_key}\n"
@@ -122,6 +125,7 @@ def init_project_config() -> ProjectConfig:
         log(f"  {k} = {v}")
 
     return cfg
+
 
 # ============================================================
 #  DNS CHECK
@@ -185,18 +189,28 @@ def full_deploy() -> None:
 
     log("[OK] Core deploy completed.")
     log("=== API ENDPOINTS ===")
-    log(f"  BASE_URL     : {cfg.base_url}")
-    log(f"  HEALTH_URL   : {cfg.api_health}")
-    log(f"  GENERATE_URL : {cfg.api_generate}")
-    log(f"  PULL_URL     : {cfg.api_pull}")
-    log(f"  API_KEY      : {cfg.api_key}")
-    log(f"  TOKEN_SECRET : {cfg.token_secret}")
+    log(f"  BASE_URL       : {cfg.base_url}")
+    log(f"  HEALTH_URL     : {cfg.api_health}")
+    log(f"  GENERATE_URL   : {cfg.api_generate}")
+    log(f"  COMPLETION_URL : {cfg.api_completion}")
+    log(f"  PULL_URL       : {cfg.api_pull}")
+    log(f"  API_KEY        : {cfg.api_key}")
+    log(f"  TOKEN_SECRET   : {cfg.token_secret}")
 
-    log("[INFO] Test your API:")
+    log("[INFO] Test your API (stream):")
     log(
         f"curl -X POST {cfg.api_generate} "
         f"-H \"Authorization: Bearer {cfg.api_key}\" "
-        f"-d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\"}}'"
+        f"-H \"Content-Type: application/json\" "
+        f"-d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\",\"stream\":true}}'"
+    )
+
+    log("[INFO] Test your API (non-stream):")
+    log(
+        f"curl -X POST {cfg.api_completion} "
+        f"-H \"Authorization: Bearer {cfg.api_key}\" "
+        f"-H \"Content-Type: application/json\" "
+        f"-d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\",\"stream\":false}}'"
     )
 
 
