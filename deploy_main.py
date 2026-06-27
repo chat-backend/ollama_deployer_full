@@ -62,7 +62,7 @@ def run(cmd: list[str], check: bool = True):
 
 
 # ============================================================
-#  PROJECT CONFIG (CHUẨN OLLAMA)
+#  PROJECT CONFIG (CHUẨN OLLAMA) – LUÔN TẠO MỚI
 # ============================================================
 def init_project_config() -> ProjectConfig:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -73,32 +73,46 @@ def init_project_config() -> ProjectConfig:
     api_pull = f"{base_url}/ollama/api/pull"
     api_health = f"{base_url}/ollama/api/health"
 
-    if not PROJECT_CONFIG_FILE.exists():
-        log("[INFO] Creating new project config (v1.0)...")
+    # Always regenerate config — backup old file safely
+    if PROJECT_CONFIG_FILE.exists():
+        backup_path = PROJECT_CONFIG_FILE.with_suffix(".bak")
+        log(f"[INFO] Backing up old project config to {backup_path}")
+        try:
+            old_data = PROJECT_CONFIG_FILE.read_text()
+            backup_path.write_text(old_data)
+        except Exception as e:
+            log(f"[WARN] Could not backup old config: {e}")
 
-        api_key = token_hex(64)
-        token_secret = token_hex(64)
+    log("[INFO] Creating fresh project config (v1.0)...")
 
-        PROJECT_CONFIG_FILE.write_text(
-            "CONFIG_VERSION=1.0\n"
-            f"BASE_URL={base_url}\n"
-            f"API_GENERATE={api_generate}\n"
-            f"API_PULL={api_pull}\n"
-            f"API_HEALTH={api_health}\n"
-            f"API_KEY={api_key}\n"
-            f"TOKEN_SECRET={token_secret}\n"
-        )
-    else:
-        log(f"[INFO] Using existing project config at {PROJECT_CONFIG_FILE}")
+    # Generate new secrets every deploy
+    api_key = token_hex(64)
+    token_secret = token_hex(64)
 
-    # Load config
+    # Write new project config
+    PROJECT_CONFIG_FILE.write_text(
+        "CONFIG_VERSION=1.0\n"
+        f"BASE_URL={base_url}\n"
+        f"API_GENERATE={api_generate}\n"
+        f"API_PULL={api_pull}\n"
+        f"API_HEALTH={api_health}\n"
+        f"API_KEY={api_key}\n"
+        f"TOKEN_SECRET={token_secret}\n"
+    )
+
+    # Load config into dict
     data: dict[str, str] = {}
     for line in PROJECT_CONFIG_FILE.read_text().splitlines():
         if "=" in line:
             k, v = line.split("=", 1)
             data[k.strip()] = v.strip()
 
-    # Write API key to /etc/ollama/api_key
+    # Ensure API key file is always overwritten cleanly
+    try:
+        API_KEY_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
     API_KEY_FILE.write_text(f"OLLAMA_API_KEY={data['API_KEY']}\n")
 
     cfg = ProjectConfig.from_dict(data)
@@ -108,7 +122,6 @@ def init_project_config() -> ProjectConfig:
         log(f"  {k} = {v}")
 
     return cfg
-
 
 # ============================================================
 #  DNS CHECK
@@ -180,7 +193,12 @@ def full_deploy() -> None:
     log(f"  TOKEN_SECRET : {cfg.token_secret}")
 
     log("[INFO] Test your API:")
-    log(f"curl -X POST {cfg.api_generate} -H \"Authorization: Bearer {cfg.api_key}\" -d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\"}}'")
+    log(
+        f"curl -X POST {cfg.api_generate} "
+        f"-H \"Authorization: Bearer {cfg.api_key}\" "
+        f"-d '{{\"model\":\"llama3:latest\",\"prompt\":\"hello\"}}'"
+    )
+
 
 # ============================================================
 #  UNIFIED CLI
@@ -262,5 +280,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
