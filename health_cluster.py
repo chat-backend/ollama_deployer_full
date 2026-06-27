@@ -54,13 +54,13 @@ def atomic_write(path: Path, content: str) -> None:
 
 
 def curl_health(backend: str, timeout: int = 3) -> bool:
-    """Check health của backend qua /api/health."""
+    """Check health của backend qua /health (native Ollama)."""
     try:
         subprocess.run(
             [
                 "curl", "-fsS",
                 "--max-time", str(timeout),
-                f"http://{backend}/api/health",
+                f"http://{backend}/health",
             ],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
