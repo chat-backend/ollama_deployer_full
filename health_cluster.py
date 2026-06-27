@@ -2,10 +2,10 @@
 
 #!/usr/bin/env python3
 """
-Cluster health & auto-heal module for Ollama PRO+ Cluster.
+Cluster health & auto-heal module for Ollama PRO+ Cluster (Ollama 0.30.x).
 
 Chức năng:
-- Kiểm tra health từng backend qua /api/health
+- Kiểm tra health từng backend (Ollama daemon) bằng CLI thay vì HTTP
 - Đếm số lần fail và auto-heal backend local sau N lần
 - Drain/undrain backend khi heal
 - Cập nhật upstream Nginx theo danh sách backend healthy
@@ -44,6 +44,7 @@ def log(msg: str) -> None:
         with LOG_FILE.open("a") as f:
             f.write(line + "\n")
     except Exception:
+        # Không để logging làm hỏng health-check
         pass
 
 
@@ -56,19 +57,25 @@ def atomic_write(path: Path, content: str) -> None:
 def curl_health(backend: str, timeout: int = 3) -> bool:
     """
     Health-check cho Ollama 0.30.x: dùng CLI thay vì HTTP.
-    Backend không còn /health hay /api/health.
+
+    Lưu ý:
+    - Ollama 0.30.x không còn /health hay /api/health.
+    - `ollama ps` kiểm tra daemon local, không phân biệt port.
+    - Với cluster nhiều node, health-check thực sự phải chạy trên từng node.
+      Ở đây module này đang chạy trên node local, nên chỉ có ý nghĩa với backend local.
     """
     try:
         result = subprocess.run(
-            ["ollama", "ps"],
+            ["/usr/local/bin/ollama", "ps"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=timeout,
             check=True,
         )
-        # Nếu ollama ps chạy được → backend healthy
+        # Nếu `ollama ps` chạy được và exit code = 0 → daemon healthy
         return True
-    except Exception:
+    except Exception as e:
+        log(f"{backend} CLI health failed: {e}")
         return False
 
 
@@ -122,7 +129,7 @@ def heal_backend(backend: str) -> bool:
         subprocess.run(["systemctl", "restart", "ollama"], check=False)
         sleep(5)
 
-        # Check health after restart
+        # Check health sau restart
         if curl_health(backend):
             log(f"{backend} recovered after restart")
             undrain_backend(backend)
